@@ -259,6 +259,9 @@ class RunViewer(object):
         markers_plot_item = markers_plot.plot([])
         self._markers_plot = (markers_plot, markers_plot_item)
 
+        self.all_jumps = []
+        self.all_jumps_items = {}
+
         self.ui.verticalLayout_9.insertWidget(1,markers_plot)
         self.ui.plot_layout.addWidget(time_axis_plot)
 
@@ -350,6 +353,10 @@ class RunViewer(object):
         self.scalehandler = None
 
     def _update_markers(self, index):
+
+        # remove jump markers
+        self.removeJumpMarkers()
+
         for line, plot in self.all_marker_items.items():
             # line.blockSignals(True)
             plot.removeItem(line)
@@ -368,10 +375,12 @@ class RunViewer(object):
             self.ui.linear_time.setEnabled(False)
             self.ui.equal_space_time.setEnabled(False)
             self.all_markers = {}
+            self.all_jumps = []
         else:
             self.ui.linear_time.setEnabled(True)
             self.ui.equal_space_time.setEnabled(True)
             self.all_markers = shot.markers
+            self.all_jumps = shot.jumps
 
         # self._update_non_linear_time(changed_shot=True)
 
@@ -409,7 +418,59 @@ class RunViewer(object):
             line = self._time_axis_plot[0].addLine(x=t, pen=pg.mkPen(color=color, width=1.5, style=Qt.DashLine), label=format_time(delta_t), labelOpts= {"color": color, "fill": QColor(255, 255, 255, 255), "rotateAxis":(1, 0), "anchors": [(0.5, 0),(0.5, 0)]}, movable=False )
             self.all_marker_items[line] = self._time_axis_plot[0]
             last_time = t
+
+        # add jump connections
+        self.renderJumps()
+
         self.update_plots()
+
+    def removeJumpMarkers(self):
+        for line, plot in self.all_jumps_items.items():
+            plot.removeItem(line)
+        self.all_jumps_items = {}
+
+    def renderJumps(self):
+        for j in self.all_jumps:
+
+            unscaled_from_t = j['from_time']
+            unscaled_to_t = j['to_time']
+            if self.scale_time:
+                from_t = self.scalehandler.get_scaled_time(unscaled_from_t)
+                to_t = self.scalehandler.get_scaled_time(unscaled_to_t)
+            else:
+                from_t = unscaled_from_t
+                to_t = unscaled_to_t
+
+
+            color = QColor(0, 255, 0)
+            line = self._markers_plot[0].plot(
+                x=[from_t, to_t],
+                y=[0, 0],
+                pen=pg.mkPen(color=color, width=1.5, style=Qt.DashLine)
+            )
+            arrow = pg.ArrowItem(
+                angle=180 if to_t > from_t else 0,
+                pen=pg.mkPen(color=color, width=1.5),
+                brush=pg.mkBrush(color=color, width=1.5),
+                headLen=10,
+                headWidth=10,
+                pos=(to_t, 0)
+            )
+            self._markers_plot[0].addItem(arrow)
+            label = self._markers_plot[0].addLine(
+                x=from_t, 
+                pen=pg.mkPen(color=QColor(255, 255, 255, 0), width=0, style=Qt.DashLine), 
+                label=j['label'], 
+                labelOpts= {
+                    "color": color, 
+                    "fill": QColor(255, 255, 255, 0), 
+                    "rotateAxis":(0, 0), 
+                    "anchors": [(1, 0),(1, 0)]
+                }, 
+                movable=False )
+            self.all_jumps_items[line] = self._markers_plot[0]
+            self.all_jumps_items[arrow] = self._markers_plot[0]
+            self.all_jumps_items[label] = self._markers_plot[0]
 
     def mouseMovedEvent(self, position, ui, name):
         if self.ui.toggle_tooltip.isChecked():
@@ -539,6 +600,10 @@ class RunViewer(object):
 
             pos.setX(new_x)
             marker.setPos(pos)
+
+        # handle jumps
+        self.removeJumpMarkers()
+        self.renderJumps()
 
         # Move the movable lines in the upper graph
         mv_markers = list(self.movable_marker_items.keys())
@@ -1437,6 +1502,8 @@ class Shot(object):
         self._channels = None
         # store list of markers
         self._markers = None
+        self._jumps = None
+        self._sections = None
         self.cached_scaler = None
         self._scalehandler = None
         self._scaled_x = {}
@@ -1482,16 +1549,47 @@ class Shot(object):
             self._traces = {}
         if self._markers is None:
             self._markers = {}
+        if self._jumps is None:
+            self._jumps = []
+        if self._sections is None:
+            self._sections = {}
         if self._shutter_times is None:
             self._shutter_times = {}
 
+        self._load_jumps()
+        self._load_sections()
         self._load_markers()
+        print(self._jumps, self._sections)
+        print(self._markers)
+
         # Let's walk the connection table, starting with the master pseudoclock
         master_pseudoclock_device = self.connection_table.find_by_name(self.master_pseudoclock_name)
 
         self._load_device(master_pseudoclock_device)
 
         # self._scalehandler = ScaleHandler(self._markers.keys(), self.stop_time)
+
+    def _load_jumps(self):
+        with h5py.File(self.path, 'r') as file:
+            if "jumps" in file:
+                for row in file["jumps"]:
+                    self._jumps.append({
+                        'label': row['label'].decode('UTF-8'),
+                        'to_label': row['to_label'],
+                        'from_time': row['time'],
+                        'to_time': row['to_time'],
+                    })
+
+    def _load_sections(self):
+        with h5py.File(self.path, 'r') as file:
+            if "sections" in file:
+                for row in file["sections"]:
+                    self._sections[row['id']] = {
+                        'id': row['id'],
+                        'start_time': row['start_time'],
+                        'end_time': row['end_time'],
+                    }
+                    self._markers[row['start_time']] = {'color': [0,255,0], 'label' : f'Section {row["id"]} start'}
 
     def _load_markers(self):
         with h5py.File(self.path, 'r') as file:
@@ -1587,6 +1685,18 @@ class Shot(object):
         if self._markers is None:
             self._load()
         return self._markers
+        
+    @property
+    def sections(self):
+        if self._sections is None:
+            self._load()
+        return self._sections
+
+    @property
+    def jumps(self):
+        if self._jumps is None:
+            self._load()
+        return self._jumps
 
     @property
     def traces(self):
