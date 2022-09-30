@@ -1559,8 +1559,6 @@ class Shot(object):
         self._load_jumps()
         self._load_sections()
         self._load_markers()
-        print(self._jumps, self._sections)
-        print(self._markers)
 
         # Let's walk the connection table, starting with the master pseudoclock
         master_pseudoclock_device = self.connection_table.find_by_name(self.master_pseudoclock_name)
